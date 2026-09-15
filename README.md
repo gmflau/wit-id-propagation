@@ -1,3 +1,33 @@
+# WIT/WPT Identity Propagation on Solo Enterprise Agentgateway on Istio Ambient Mesh
+
+This lab builds a single-cluster KinD environment on Istio Ambient Mesh to test how workload identity actually propagates across a chain of Solo Enterprise Agentgateway hops, using two Solo-specific mechanisms:
+
+- **WIT (Workload Identity Token)** — a per-workload JWT ztunnel embeds into its own mTLS cert (`ENABLE_WORKLOAD_CLAIMS`), proving a workload's SPIFFE identity.
+- **WPT (Workload Proof Token)** — a short-lived JWT one gateway mints (`backend.workloadIdentity.emitProof`) to vouch for a verified caller to the next hop, enforced downstream via `traffic.entWptEnforcement`.
+
+The topology is built up one hop at a time, each stage verified before adding the next:
+
+```
+1. sleep → wpt-cel-egress → httpbin                                    (plain egress, no waypoint)
+2. sleep → wpt-cel-egress → httpbin-waypoint → httpbin                 (waypoint added, no enforcement)
+3. sleep → wpt-cel-egress → httpbin-waypoint → httpbin                 (+ entWptEnforcement + proof header)
+4. sleep → wpt-cel-egress → wpt-cel-ingress → httpbin-waypoint → httpbin  (final: ingress hop added)
+```
+
+The final topology exercised is:
+
+```
+sleep → wpt-cel-egress → wpt-cel-ingress → httpbin-waypoint → httpbin
+```
+
+Each gateway hop in that chain validates the proof it received and mints a new one before forwarding, extending an `X-Forwarded-Workload-Identity` header by one entry per hop — so the request `httpbin` finally sees carries the full, ordered identity chain back to `sleep`, the original caller.
+
+Everything in this file was verified live against a real cluster, including several corrections to earlier, wrong assumptions (a mistaken CA SAN, wrong `entWptEnforcement` target kind, a hardcoded backend header-size limit, and more) — where something surprising was found, it's called out inline as a "Correction from an earlier version of this file."
+
+Requires a Solo Gloo Mesh license key (`GLOO_MESH_LICENSE_KEY`) and an Enterprise Agentgateway license key (`AGENTGATEWAY_LICENSE_KEY`).
+
+---
+
 # Env setup
 
 ## Create a KinD cluster
