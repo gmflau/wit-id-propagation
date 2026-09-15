@@ -1,4 +1,4 @@
-# WIT/WPT Identity Propagation on Solo Enterprise Agentgateway on Istio Ambient Mesh
+# WIT/WPT Identity Propagation on Solo Enterprise Agentgateway and Istio Ambient Mesh
 
 This lab builds a single-cluster KinD environment on Istio Ambient Mesh to test how workload identity actually propagates across a chain of Solo Enterprise Agentgateway hops, using two Solo-specific mechanisms:
 
