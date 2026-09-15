@@ -338,7 +338,7 @@ kubectl wait --for=condition=available deploy/sleep -n sleep-ns --timeout=90s
 
 ---
 
-## Set up `sleep → wpt-cel-egress → wpt-cel-ingress → httpbin`:
+## Set up `sleep → wpt-cel-egress → httpbin`:
 
 ```bash
 kubectl create namespace i-peg
@@ -412,7 +412,7 @@ spec:
 EOF
 ```
 
-Verify `sleep → wpt-cel-egress → wpt-cel-ingress → httpbin`:
+Verify `sleep → wpt-cel-egress → httpbin`:
 ```bash
 kubectl exec -n sleep-ns deploy/sleep -- sh -c 'curl -si --max-time 15 http://wpt-cel-egress.i-peg.svc.cluster.local:8080/headers'
 ```
