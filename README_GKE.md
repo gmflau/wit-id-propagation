@@ -758,17 +758,17 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'cur
 HTTP/1.1 503 Service Unavailable
 content-type: text/plain
 content-length: 45
-date: Wed, 16 Sep 2026 20:25:17 GMT
+date: Wed, 16 Sep 2026 22:47:23 GMT
 
-backends required DNS resolution which failed%     
+backends required DNS resolution which failed
 ```
 heck `wpt-cel-egress`'s own access log for the failed upstream call:
 ```bash
 kubectl --context $REMOTE_CONTEXT2 logs -n i-peg deploy/wpt-cel-egress --tail=2 --timestamps
 ```
 ```
-2026-09-16T20:22:06.719288923Z 2026-09-16T20:22:06.718955Z      error   request gateway=i-peg/wpt-cel-egress listener=http route=i-pig/wpt-cel-egress-to-workload-b endpoint=portfolio-b-pig.i-pig.mesh.internal:8080 src.addr=10.20.0.10:34986 src.identity=spiffe://cluster.local/ns/demo/sa/workload-a1 http.method=GET http.host=wpt-cel-egress.i-peg.svc.cluster.local http.path=/workload-b1/headers http.version=HTTP/1.1 http.status=503 protocol=http error="backends required DNS resolution which failed" reason=NoHealthyBackend duration=41ms
-2026-09-16T20:25:17.774993215Z 2026-09-16T20:25:17.774636Z      error   request gateway=i-peg/wpt-cel-egress listener=http route=i-pig/wpt-cel-egress-to-workload-b endpoint=portfolio-b-pig.i-pig.mesh.internal:8080 src.addr=10.20.0.10:34986 src.identity=spiffe://cluster.local/ns/demo/sa/workload-a1 http.method=GET http.host=wpt-cel-egress.i-peg.svc.cluster.local http.path=/workload-b1/headers http.version=HTTP/1.1 http.status=503 protocol=http error="backends required DNS resolution which failed" reason=NoHealthyBackend duration=34ms
+2026-09-16T22:47:23.554584925Z 2026-09-16T22:47:23.554252Z      error   request gateway=i-peg/wpt-cel-egress listener=http route=i-pig/wpt-cel-egress-to-workload-b endpoint=portfolio-b-pig.i-pig.mesh.internal:8080 src.addr=10.20.0.10:34080 src.identity=spiffe://cluster.local/ns/demo/sa/workload-a1 http.method=GET http.host=wpt-cel-egress.i-peg.svc.cluster.local http.path=/workload-b1/headers http.version=HTTP/1.1 http.status=503 protocol=http error="backends required DNS resolution which failed" reason=NoHealthyBackend duration=4ms
+2026-09-16T22:47:25.012755414Z 2026-09-16T22:47:25.012428Z      error   request gateway=i-peg/wpt-cel-egress listener=http route=i-pig/wpt-cel-egress-to-workload-b endpoint=portfolio-b-pig.i-pig.mesh.internal:8080 src.addr=10.20.0.10:34080 src.identity=spiffe://cluster.local/ns/demo/sa/workload-a1 http.method=GET http.host=wpt-cel-egress.i-peg.svc.cluster.local http.path=/workload-b1/headers http.version=HTTP/1.1 http.status=503 protocol=http error="backends required DNS resolution which failed" reason=NoHealthyBackend duration=15ms
 ```
 
 
