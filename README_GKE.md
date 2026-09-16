@@ -1,6 +1,6 @@
 ---
 author: Gilbert Lau
-date: "September 18, 2026"
+date: "September xx, 2026"
 versions:
   "Solo istio distro": 1.31.0
   "enterprise-agentgateway": v2026.9.0
@@ -641,7 +641,7 @@ spec:
     tls:
       mode: Terminate
       options:
-        gateway.isito.io/tls-terminate-mode: ISTIO_MUTUAL
+        gateway.istio.io/tls-terminate-mode: ISTIO_MUTUAL
     allowedRoutes:
       namespaces:
         from: All
