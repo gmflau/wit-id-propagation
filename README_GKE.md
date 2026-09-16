@@ -211,7 +211,7 @@ enterprise-agentgateway-waypoint   solo.io/enterprise-agentgateway   True
 
 ---
 
-## Deploy workloads
+## 3.0 Deploy workloads
 
 Deploy workload-a1
 ```bash
@@ -374,7 +374,7 @@ kubectl --context $REMOTE_CONTEXT3 wait --for=condition=available deploy/workloa
 
 ---
 
-## Set up `workload-a1 → wpt-cel-egress → workload-a2`:
+## 4.0 Set up `workload-a1 → wpt-cel-egress → workload-a2`:
 
 ```bash
 kubectl --context $REMOTE_CONTEXT2 create namespace i-peg
@@ -502,7 +502,7 @@ Transfer-Encoding: chunked
 
 ---
 
-## Set up `workload-a1 → wpt-cel-egress → demo-waypoint → workload-a2`:
+## 5.0 Set up `workload-a1 → wpt-cel-egress → demo-waypoint → workload-a2`:
 
 ```bash
 kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
@@ -555,24 +555,19 @@ kubectl --context $REMOTE_CONTEXT2 label namespace demo istio.io/use-waypoint=de
 kubectl --context $REMOTE_CONTEXT2 label namespace demo istio.io/ingress-use-waypoint=true --overwrite
 ```
 
-**What was missing:** `EnterpriseAgentgatewayParameters` with `workloadClaims.enabled: true` alone doesn't make a hop mint or forward anything — that only comes from an explicit `backend.workloadIdentity` policy (`demo-waypoint-emit` above). Without it, `demo-waypoint` can genuinely process a request (correct routing via the `use-waypoint`/`ingress-use-waypoint` labels) while still leaving no trace of itself in `X-Forwarded-Workload-Identity`, since nothing tells it to append its own identity to the chain — indistinguishable from a bypass by looking at the header alone. Confirm by checking the waypoint's own access log for `gateway=demo/demo-waypoint ... src.identity=...` before assuming it's a routing problem, not a missing-policy one.
-
 Verify `workload-a1 → wpt-cel-egress → demo-waypoint → workload-a2`:
 ```bash
 kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'curl -si --max-time 15 http://wpt-cel-egress.i-peg.svc.cluster.local:8080/workload-a2/headers'
 ```
 
+Check `demo-waypoint`'s own access log to confirm it's actually in the path (not bypassed):
+```bash
+kubectl --context $REMOTE_CONTEXT2 logs -n demo deploy/demo-waypoint --tail=3 --timestamps
+```
+
 ---
 
-## Set up `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
-
-**Missing piece, same as the `pig-kgateway.i-pig.mesh.internal` case documented above:** a `kind: Hostname` backendRef needs an actual `ServiceEntry` publishing that hostname in the *consuming* namespace (`i-pig`) — the auto-generated cross-cluster mirror `ServiceEntry` doesn't work here either, per the same three gotchas already noted (can't be a `targetRefs` target, name-vs-hostname confusion, wrong namespace). Fetch `workload-b1`'s actual pod IP on cluster-3 first — a `ServiceEntry` endpoint bypasses the Service/kube-proxy entirely and must point at the pod directly, not at the ClusterIP:
-
-```bash
-WORKLOAD_B1_IP=$(kubectl --context $REMOTE_CONTEXT3 get pod -n demo -l app=workload-b1 \
-  -o jsonpath='{.items[0].status.podIP}')
-echo $WORKLOAD_B1_IP
-```
+## 6.0 Set up `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
 
 ```bash
 kubectl --context $REMOTE_CONTEXT1 create namespace i-pig
@@ -580,25 +575,6 @@ kubectl --context $REMOTE_CONTEXT1 create namespace i-pig
 kubectl --context $REMOTE_CONTEXT1 label namespace i-pig istio.io/dataplane-mode=ambient --overwrite
 
 kubectl --context $REMOTE_CONTEXT1 apply -f - <<EOF
-apiVersion: networking.istio.io/v1
-kind: ServiceEntry
-metadata:
-  name: workload-b1-mesh-internal
-  namespace: i-pig
-spec:
-  hosts:
-  - workload-b1.demo.mesh.internal
-  location: MESH_EXTERNAL
-  resolution: STATIC
-  ports:
-  - number: 8000
-    name: http
-    protocol: HTTP
-  endpoints:
-  - address: ${WORKLOAD_B1_IP}
-    ports:
-      http: 8080
----
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayParameters
 metadata:
@@ -667,14 +643,14 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: portfolio-b-pig-to-workload-b1
-  namespace: i-pig
+  namespace: demo
 spec:
   parentRefs:
   - name: portfolio-b-pig
     namespace: i-pig
   rules:
   - matches:
-    - path
+    - path:
         type: PathPrefix
         value: /workload-b1
     filters:
@@ -683,7 +659,7 @@ spec:
         path:
           type: ReplacePrefixMatch
           replacePrefixMatch: /
-  - backendRefs:
+    backendRefs:
     - group: networking.istio.io
       kind: Hostname
       name: workload-b1.demo.mesh.internal
@@ -691,661 +667,84 @@ spec:
 EOF
 ```
 
-### Proof: `enterprise-kgateway` resolves the same `Hostname` backendRef with no manual `ServiceEntry`
-
+Label `portfolio-b-pig` as a global service so it's reachable cross-cluster:
 ```bash
-helm uninstall enterprise-agentgateway-crds \
-  --kube-context ${REMOTE_CONTEXT1} \
-  -n agentgateway-system
+kubectl --context $REMOTE_CONTEXT1 label svc portfolio-b-pig -n i-pig solo.io/service-scope=global --overwrite
 ```
 
+Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
 ```bash
-export KGW_VERSION=2.2.0
+kubectl --context $REMOTE_CONTEXT1 create namespace demo
+kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
+```
 
-helm upgrade -i enterprise-kgateway-crds \
-  oci://us-docker.pkg.dev/solo-public/enterprise-kgateway/charts/enterprise-kgateway-crds \
-  --create-namespace \
-  --namespace kgateway-system \
-  --version ${KGW_VERSION} \
-  --kube-context ${REMOTE_CONTEXT1}
+<!-- Verify:
+```bash
+export PIG_IP=$(kubectl --context $REMOTE_CONTEXT1 get gtw -n i-pig portfolio-b-pig -ojsonpath='{.status.addresses[0].value}')
+echo $PIG_IP
+curl -si http://$PIG_IP:8080/workload-b1/headers
+``` -->
 
-helm upgrade -i enterprise-kgateway \
-  oci://us-docker.pkg.dev/solo-public/enterprise-kgateway/charts/enterprise-kgateway \
-  -n kgateway-system \
-  --version ${KGW_VERSION} \
-  --set-string licensing.licenseKey=$GLOO_LICENSE_KEY \
-  --set controller.extraEnv.KGW_ENABLE_ISTIO_INTEGRATION=true \
-  --kube-context ${REMOTE_CONTEXT1}
+```bash
+kubectl --context $REMOTE_CONTEXT2 create namespace i-pig
+kubectl --context $REMOTE_CONTEXT2 label namespace i-pig istio.io/dataplane-mode=ambient
 
-kubectl --context $REMOTE_CONTEXT1 apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: kgw-proof
-  namespace: i-pig
-spec:
-  gatewayClassName: enterprise-kgateway
-  listeners:
-  - name: http
-    port: 80
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
----
+kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: kgw-proof-to-workload-b1
+  name: wpt-cel-egress-to-workload-b
   namespace: i-pig
 spec:
   parentRefs:
-  - name: kgw-proof
-    namespace: i-pig
+  - name: wpt-cel-egress
+    namespace: i-peg
   rules:
-  - backendRefs:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /workload-b1
+    backendRefs:
     - group: networking.istio.io
       kind: Hostname
-      name: workload-b1.demo.mesh.internal
-      port: 8000
+      name: portfolio-b-pig.i-pig.mesh.internal
+      port: 8080
 EOF
 ```
 
-Verify:
+Verify `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
 ```bash
-export KGW_PROOF_IP=$(kubectl --context $REMOTE_CONTEXT1 get gtw -n i-pig kgw-proof -ojsonpath='{.status.addresses[0].value}')
-echo $KGW_PROOF_IP
-curl -si http://$KGW_PROOF_IP/headers
+kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'curl -si --max-time 15 http://wpt-cel-egress.i-peg.svc.cluster.local:8080/workload-b1/headers'
+```
+```
+HTTP/1.1 503 Service Unavailable
+content-type: text/plain
+content-length: 65
+date: Wed, 16 Sep 2026 00:13:15 GMT
+
+upstream call failed: Connect: unexpected status: 400 Bad Request%  
 ```
 
-- **`200 OK`** → confirms the hypothesis: `enterprise-kgateway`'s controller resolves the auto-generated cross-cluster mirror `ServiceEntry` as a valid `Hostname` backend target where `enterprise-agentgateway`'s controller doesn't — a genuine product difference, not a general Gateway API/Istio limitation.
-- **Same `"no ServiceEntry ... publishes hostname"`-style failure** → the gap is more fundamental (e.g. something about `workload-b1`'s specific `service-scope: global` federation, not agentgateway specifically) and the earlier conclusion needs revisiting.
-
-Clean up after: `kubectl --context $REMOTE_CONTEXT1 delete gateway kgw-proof -n i-pig; kubectl --context $REMOTE_CONTEXT1 delete httproute kgw-proof-to-workload-b1 -n i-pig` (leave the Helm releases in place only if you want to keep testing kgateway further).
-
----
-
-
-
-
-
-
-
-
-
-
-
-
-
----
-
-## 2.1 Deploy `demo-egress-waypoint` (agentgateway) on `cluster-2`
-
-`demo-egress-waypoint` intercepts outbound traffic from workload-A. It operates as an egress waypoint for the `source-demo` namespace on cluster-2: when workload-A sends a plain HTTP request, ztunnel routes it through this agentgateway before it leaves the cluster. Workload-A's own ztunnel already forwards a WIT for its SPIFFE identity on the outbound HBONE connection (from the SAN claims istiod embedded in its cert — enabled by `ENABLE_WORKLOAD_CLAIMS=true` on ztunnel and `workloadClaims.enabled: true` below), so the egress waypoint's job is to forward that WIT via `SourceDelegation` — transparently, without any application involvement.
-
+Check `wpt-cel-egress`'s own access log for the failed upstream call:
 ```bash
-kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayParameters
-metadata:
-  name: demo-egress-waypoint-params
-  namespace: source-demo
-spec:
-  workloadClaims:
-    enabled: true
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: demo-egress-waypoint
-  namespace: source-demo
-  labels:
-    istio.io/waypoint-for: all
-spec:
-  gatewayClassName: enterprise-agentgateway-waypoint
-  listeners:
-  - name: mesh
-    port: 15008
-    protocol: HBONE
-    allowedRoutes:
-      namespaces:
-        from: All
-  infrastructure:
-    parametersRef:
-      group: enterpriseagentgateway.solo.io
-      kind: EnterpriseAgentgatewayParameters
-      name: demo-egress-waypoint-params
-EOF
+kubectl --context $REMOTE_CONTEXT2 logs -n i-peg deploy/wpt-cel-egress --tail=2 --timestamps
+```
+```sh
+2026-09-16T00:13:15.506609444Z 2026-09-16T00:13:15.506317Z      error   request gateway=i-peg/wpt-cel-egress listener=http route=i-pig/wpt-cel-egress-to-workload-b endpoint=portfolio-b-pig.i-pig.mesh.internal:8080 src.addr=10.20.0.10:59570 src.identity=spiffe://cluster.local/ns/demo/sa/workload-a1 http.method=GET http.host=wpt-cel-egress.i-peg.svc.cluster.local http.path=/workload-b1/headers http.version=HTTP/1.1 http.status=503 protocol=http error="upstream call failed: Connect: unexpected status: 400 Bad Request" reason=UpstreamFailure duration=17ms
+2026-09-16T00:13:49.319915744Z 2026-09-16T00:13:49.319610Z      error   request gateway=i-peg/wpt-cel-egress listener=http route=i-pig/wpt-cel-egress-to-workload-b endpoint=portfolio-b-pig.i-pig.mesh.internal:8080 src.addr=10.20.0.10:59570 src.identity=spiffe://cluster.local/ns/demo/sa/workload-a1 http.method=GET http.host=wpt-cel-egress.i-peg.svc.cluster.local http.path=/workload-b1/headers http.version=HTTP/1.1 http.status=503 protocol=http error="upstream call failed: Connect: unexpected status: 400 Bad Request" reason=UpstreamFailure duration=8ms
 ```
 
+Check `portfolio-b-pig`'s own access log on the receiving cluster to see the rejected inbound HBONE `CONNECT`:
 ```bash
-kubectl --context $REMOTE_CONTEXT2 get gateway.gateway.networking.k8s.io -n source-demo
-kubectl --context $REMOTE_CONTEXT2 rollout status deployment/demo-egress-waypoint -n source-demo --timeout=120s
+kubectl --context $REMOTE_CONTEXT1 logs -n i-pig deploy/portfolio-b-pig --tail=2 --timestamps
 ```
-
-Verify the pod obtained its Istio certificate:
-```bash
-kubectl --context $REMOTE_CONTEXT2 logs -n source-demo \
-  -l gateway.networking.k8s.io/gateway-name=demo-egress-waypoint \
-  | grep -E "Successfully fetched|marking server ready"
-```
-
-### 2.2 Configure SourceDelegation at `demo-egress-waypoint`
-
-`SourceDelegation` instructs the egress waypoint to forward the inbound WIT on its verified HBONE connection — the WIT workload-A's ztunnel already attached from its SAN-embedded SPIFFE identity — rather than minting a new one. `emitProof: true` produces a WPT binding that WIT to this verified connection, allowing `pig-kgateway` downstream to forward it with confidence via its own `SourceDelegation` policy.
-
-This targets a `ServiceEntry` for `pig-kgateway` rather than the `demo-egress-waypoint` Gateway directly (the original, simpler approach — still valid, see the commented block below) to scope the delegation specifically to egress traffic bound for `pig-kgateway`, matching Solo's own documented pattern for egress-to-a-named-destination (`docs.solo.io/istio/1.31.x/agentic-mesh/egress/`).
-
-Three things had to be fixed to get this to attach, each confirmed live:
-1. **The auto-generated cross-cluster mirror `ServiceEntry` (`autogen.i-pig.pig-kgateway`, in `istio-system`) can't be used as a `targetRefs` target at all** — `EnterpriseAgentgatewayPolicy` never attaches to it, `use-waypoint`-labeling it has no effect. A manually-defined `ServiceEntry` is required instead.
-2. **`targetRefs.name` must be the ServiceEntry's own Kubernetes object name, not the hostname it publishes** (`pig-kgateway.i-pig.mesh.internal` is a `spec.hosts` entry, not a `metadata.name` — using it as the latter produces `"ServiceEntry ... not found"`).
-3. **The `ServiceEntry` and the policy both have to live in `demo-egress-waypoint`'s own namespace (`source-demo`), not `istio-system`.** `istio.io/use-waypoint` resolves the named waypoint within the same namespace as the label; `EnterpriseAgentgatewayPolicy`'s `targetRefs` has no cross-namespace support at all (confirmed elsewhere in this `046` series — patching one in fails with `strict decoding error: unknown field`).
-
-```bash
-# Original, simpler approach — targets the Gateway directly, still valid:
-# kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
-# apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-# kind: EnterpriseAgentgatewayPolicy
-# metadata:
-#   name: demo-egress-source-delegation
-#   namespace: source-demo
-# spec:
-#   targetRefs:
-#   - group: gateway.networking.k8s.io
-#     kind: Gateway
-#     name: demo-egress-waypoint
-#   backend:
-#     workloadIdentity:
-#       mode: SourceDelegation
-#       emitProof: true
-#       proofLifetime: 60s
-# EOF
-export PIG_KGATEWAY_IP=$(kubectl --context $REMOTE_CONTEXT1 get svc pig-kgateway -n i-pig \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo $PIG_KGATEWAY_IP
-
-kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
-apiVersion: networking.istio.io/v1
-kind: ServiceEntry
-metadata:
-  name: pig-kgateway-mesh-internal
-  namespace: source-demo
-  labels:
-    istio.io/use-waypoint: demo-egress-waypoint
-spec:
-  hosts:
-  - pig-kgateway.i-pig.mesh.internal
-  location: MESH_EXTERNAL
-  resolution: STATIC
-  ports:
-  - number: 80
-    name: http
-    protocol: HTTP
-  endpoints:
-  - address: ${PIG_KGATEWAY_IP}
----
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: demo-egress-source-delegation
-  namespace: source-demo
-spec:
-  targetRefs:
-  - kind: ServiceEntry
-    group: networking.istio.io
-    name: pig-kgateway-mesh-internal
-  backend:
-    workloadIdentity:
-      mode: SourceDelegation
-      emitProof: true
-      proofLifetime: 60s
-EOF
-```
-
-Verify it actually attached before moving on:
-```bash
-kubectl --context $REMOTE_CONTEXT2 get enterpriseagentgatewaypolicy demo-egress-source-delegation -n source-demo \
-  -o jsonpath='{.status.ancestors[0].conditions}'
-# Expected: ..."message":"Attached to all targets"...
-```
-
-### 2.3 Route workload-A outbound traffic through `demo-egress-waypoint`
-
-Workload-A's ServiceAccount needs to be labeled so ztunnel routes its outbound HBONE connections through the egress waypoint — but `workload-a-sa` doesn't exist yet at this point in the lab. **Don't run this yet**; it's done in §3.1, once §3.0 has created the ServiceAccount.
-
----
-
-## 2.4 Deploy `pig-kgateway` (agentgateway) on `cluster-1`
-
-`pig-kgateway` is the PIG gateway on cluster-1. It uses `enterprise-agentgateway` (not the waypoint variant) and listens on HTTP port 80 as a standard ingress gateway. Because it is itself agentgateway, it participates natively in the WIT chain via `SourceDelegation` — no separate `pig-waypoint` component is needed.
-
-```bash
-kubectl --context $REMOTE_CONTEXT1 apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayParameters
-metadata:
-  name: pig-kgateway-params
-  namespace: i-pig
-spec:
-  workloadClaims:
-    enabled: true
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: pig-kgateway
-  namespace: i-pig
-spec:
-  gatewayClassName: enterprise-agentgateway
-  listeners:
-  - name: http
-    port: 80
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
-  infrastructure:
-    parametersRef:
-      group: enterpriseagentgateway.solo.io
-      kind: EnterpriseAgentgatewayParameters
-      name: pig-kgateway-params
-EOF
-```
-
-```bash
-kubectl --context $REMOTE_CONTEXT1 get gateway.gateway.networking.k8s.io -n i-pig
-kubectl --context $REMOTE_CONTEXT1 rollout status deployment/pig-kgateway -n i-pig --timeout=120s
-```
-
-Verify the pod obtained its Istio certificate:
-```bash
-kubectl --context $REMOTE_CONTEXT1 logs -n i-pig \
-  -l gateway.networking.k8s.io/gateway-name=pig-kgateway \
-  | grep -E "Successfully fetched|marking server ready"
-```
-
-### 2.5 Configure SourceDelegation at `pig-kgateway`
-
-`pig-kgateway` receives requests from `demo-egress-waypoint` that already carry workload-A's WIT (hoisted in §2.2). `SourceDelegation` forwards that WIT to the backend (`demo-waypoint` on cluster-3) and emits a fresh WPT proving pig-kgateway received it over a verified mTLS connection from the egress waypoint.
-
-```bash
-kubectl --context $REMOTE_CONTEXT1 apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: pig-kgateway-source-delegation
-  namespace: i-pig
-spec:
-  targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: pig-kgateway
-  backend:
-    workloadIdentity:
-      mode: SourceDelegation
-      emitProof: true
-      proofLifetime: 60s
-EOF
+```sh
+2026-09-16T00:13:15.505042609Z 2026-09-16T00:13:15.504798Z	warn	proxy::gateway:inbound	hbone failed: hostname resolution not supported	
+2026-09-16T00:13:49.318773912Z 2026-09-16T00:13:49.318549Z	warn	proxy::gateway:inbound	hbone failed: hostname resolution not supported	
 ```
 
 ---
 
-## 2.6 Deploy `demo-waypoint` (agentgateway) on `cluster-3`
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayParameters
-metadata:
-  name: demo-waypoint-params
-  namespace: i-pig
-spec:
-  workloadClaims:
-    enabled: true
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: demo-waypoint
-  namespace: i-pig
-  labels:
-    istio.io/waypoint-for: all
-spec:
-  gatewayClassName: enterprise-agentgateway-waypoint
-  listeners:
-  - name: mesh
-    port: 15008
-    protocol: HBONE
-    allowedRoutes:
-      namespaces:
-        from: All
-  infrastructure:
-    parametersRef:
-      group: enterpriseagentgateway.solo.io
-      kind: EnterpriseAgentgatewayParameters
-      name: demo-waypoint-params
-EOF
-```
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 get gateway.gateway.networking.k8s.io -n i-pig
-kubectl --context $REMOTE_CONTEXT3 rollout status deployment/demo-waypoint -n i-pig --timeout=120s
-```
-
-Verify Istio certificate issuance on `cluster-3`:
-```bash
-kubectl --context $REMOTE_CONTEXT3 logs -n i-pig \
-  -l gateway.networking.k8s.io/gateway-name=demo-waypoint \
-  | grep -E "Successfully fetched|marking server ready"
-```
-
-### 2.7 Label `i-pig` namespace to route through `demo-waypoint`
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 label ns i-pig istio.io/use-waypoint=demo-waypoint --overwrite
-kubectl --context $REMOTE_CONTEXT3 label ns i-pig istio.io/ingress-use-waypoint=true --overwrite
-```
-
-### 2.8 Configure WPT enforcement and authorization at `demo-waypoint`
-
-PeerBound enforcement validates the WPT chain. The authorization policy uses `workloadIdentity.chain.origin` — which resolves to workload-A's SPIFFE identity, hoisted by `demo-egress-waypoint` and re-signed by `pig-kgateway`, preserved end-to-end even though workload-A never attached a WIT header.
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: demo-waypoint-wpt-enforce
-  namespace: i-pig
-spec:
-  targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: demo-waypoint
-  traffic:
-    entWptEnforcement:
-      mode: PeerBound
-EOF
-```
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: demo-waypoint-authz
-  namespace: i-pig
-spec:
-  targetRefs:
-  - kind: Service
-    group: ""
-    name: workload-b
-  traffic:
-    authorization:
-      action: Allow
-      policy:
-        matchExpressions:
-        - 'workloadIdentity.chain.origin.endsWith("/ns/source-demo/sa/workload-a-sa")'
-EOF
-```
-
----
-
-## 3.0 Deploy Sample Workloads
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 -n source-demo apply -f - <<EOF
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: workload-a-sa
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: workload-a
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: workload-a
-  template:
-    metadata:
-      labels:
-        app: workload-a
-    spec:
-      serviceAccountName: workload-a-sa
-      containers:
-      - name: netshoot
-        image: nicolaka/netshoot
-        command: ["sleep", "infinity"]
-EOF
-```
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 -n i-pig apply -f - <<EOF
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: workload-b-sa
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: workload-b
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: workload-b
-  template:
-    metadata:
-      labels:
-        app: workload-b
-    spec:
-      serviceAccountName: workload-b-sa
-      containers:
-      - name: httpbin
-        image: mccutchen/go-httpbin:v2.15.0
-        ports:
-        - containerPort: 8080
-          name: http
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: workload-b
-  labels:
-    solo.io/service-scope: global
-spec:
-  selector:
-    app: workload-b
-  ports:
-  - port: 80
-    targetPort: http
-    name: http
-EOF
-```
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 wait --for=condition=ready pod -l app=workload-a -n source-demo --timeout=120s
-kubectl --context $REMOTE_CONTEXT2 get pods -n source-demo
-
-kubectl --context $REMOTE_CONTEXT3 wait --for=condition=ready pod -l app=workload-b -n i-pig --timeout=120s
-kubectl --context $REMOTE_CONTEXT3 get pods -n i-pig
-```
-
-### 3.1 Label workload-A's ServiceAccount for egress waypoint
-
-Route outbound traffic from workload-A through `demo-egress-waypoint`:
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 label serviceaccount workload-a-sa -n source-demo \
-  istio.io/use-waypoint=demo-egress-waypoint
-```
-
-### 3.2 Create an HTTPRoute to reach workload-B via PIG
-
-```bash
-kubectl --context $REMOTE_CONTEXT1 apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: workload-b-route
-  namespace: i-pig
-spec:
-  parentRefs:
-  - name: pig-kgateway
-    namespace: i-pig
-  rules:
-  - backendRefs:
-    - group: networking.istio.io
-      kind: Hostname
-      name: workload-b.i-pig.mesh.internal
-      port: 80
-EOF
-```
-
-Label `pig-kgateway` as a global service so workload-A can reach it cross-cluster:
-```bash
-kubectl --context $REMOTE_CONTEXT1 label svc pig-kgateway -n i-pig solo.io/service-scope=global
-```
-
-Verify PIG → workload-B is reachable:
-```bash
-export GW_IP=$(kubectl --context $REMOTE_CONTEXT1 get gtw -n i-pig pig-kgateway \
-  -ojsonpath='{.status.addresses[0].value}')
-echo $GW_IP
-curl -si http://$GW_IP/headers
-# Expected: HTTP/1.1 200 OK
-```
-
----
-
-## 4.0 Observe WIT Propagation
-
-### 4.1 Send plain request via PIG — egress waypoint hoists WIT automatically
-
-workload-A sends a plain HTTP request with no identity headers. `demo-egress-waypoint` on cluster-2 intercepts the outbound traffic, reads workload-A's SPIFFE identity from the mTLS connection, and mints a WIT for `workload-a-sa`. `pig-kgateway` on cluster-1 forwards the WIT via `SourceDelegation` and emits a fresh WPT. `demo-waypoint` validates the WPT chain and authorizes based on `workload-a-sa`.
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 exec -n source-demo \
-  $(kubectl --context $REMOTE_CONTEXT2 get pod -n source-demo -l app=workload-a -o jsonpath='{.items[0].metadata.name}') \
-  -- curl -si http://pig-kgateway.i-pig.mesh.internal/headers \
-  | grep -i -E "Workload-Identity-Token|Workload-Proof-Token"
-```
-
-Originally expected — workload-B echoing back the WIT and WPT as headers:
-```
-"Workload-Identity-Token": ["eyJ..."]
-"Workload-Proof-Token": ["eyJ..."]
-```
-
-**This does not currently happen.** Neither header appears at `workload-B` in this build, with or without `entWptEnforcement` configured — see the verification bug called out above. Attaching these headers to the upstream request appears to depend on `entWptEnforcement` actually running at the receiving gateway, which then always rejects the request before it reaches the backend once a real WIT/WPT is validated. **Skip to §5.1** for a working way to prove identity propagation that doesn't depend on this broken path.
-
-### 4.2 Confirm via `demo-waypoint` access logs on `cluster-3`
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 logs -n i-pig \
-  -l gateway.networking.k8s.io/gateway-name=demo-waypoint \
-  --tail=10
-```
-
-Expected for an authorized request:
-```
-info  request gateway=i-pig/demo-waypoint ... http.status=200 protocol=http duration=Xms
-```
-
-Denied requests log:
-```
-info  request ... http.status=403 error="authorization failed" reason=Authorization duration=0ms
-```
-
-### 4.3 Confirm via `pig-kgateway` access logs on `cluster-1`
-
-agentgateway logs WIT/WPT fields natively — no custom log format configuration required:
-
-```bash
-kubectl --context $REMOTE_CONTEXT1 logs -n i-pig \
-  -l gateway.networking.k8s.io/gateway-name=pig-kgateway \
-  --tail=5
-```
-
----
-
-## 5.0 Verify Unauthorized Identity is Rejected
-
-> **Currently not runnable as written.** This scenario depends on `demo-waypoint-wpt-enforce` + `demo-waypoint-authz` (§2.8) being active at `demo-waypoint`, but those policies always trip the verification bug from the Alpha-feature callout above — they reject *every* request, not just unauthorized ones. This lab's live state has both policies removed (see §5.1). Re-apply them from §2.8 only once the underlying bug is fixed upstream.
-
-A pod running as a different ServiceAccount (`other-sa`) is NOT labeled to use the egress waypoint, so no WIT is hoisted for its outbound traffic. The request arrives at `pig-kgateway` without a WIT; `SourceDelegation` has nothing to forward; `demo-waypoint` sees no `chain.origin` matching `workload-a-sa` and returns 403.
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 -n source-demo create serviceaccount other-sa 2>/dev/null || true
-
-kubectl --context $REMOTE_CONTEXT2 run curl-deny -n source-demo \
-  --image=nicolaka/netshoot --restart=Never \
-  --overrides='{"spec":{"serviceAccountName":"other-sa"}}' \
-  -- curl -si http://pig-kgateway.i-pig.mesh.internal/headers
-
-until kubectl --context $REMOTE_CONTEXT2 get pod curl-deny -n source-demo \
-  -o jsonpath='{.status.phase}' 2>/dev/null | grep -qE "Succeeded|Failed"; do sleep 2; done
-kubectl --context $REMOTE_CONTEXT2 logs curl-deny -n source-demo | grep "HTTP/"
-kubectl --context $REMOTE_CONTEXT2 delete pod curl-deny -n source-demo --ignore-not-found
-```
-
-Expected:
-```
-HTTP/1.1 403 Forbidden
-```
-
----
-
-## 5.1 Final demonstration: proving identity propagation without WPT enforcement
-
-Because `entWptEnforcement` cannot currently validate a WIT/WPT without hitting the bug above, this section proves identity propagation a different way: `SourceDelegation` operates at the **mTLS connection level**, independent of WIT/WPT header verification. `demo-egress-waypoint` doesn't just relay a claim in a header — it re-establishes its own outbound connection to the next hop *as* workload-A's SPIFFE identity (a delegated credential). The receiving proxy reports that as the connection's verified peer identity (`src.identity`) in its own access log, with no `entWptEnforcement` or `AuthorizationPolicy` involved.
-
-Make sure neither `demo-waypoint-wpt-enforce` nor `demo-waypoint-authz` is applied — they only trigger the verification bug and reject the request before this can be observed:
-
-```bash
-kubectl --context $REMOTE_CONTEXT3 delete enterpriseagentgatewaypolicy \
-  demo-waypoint-wpt-enforce demo-waypoint-authz -n i-pig --ignore-not-found
-```
-
-**Before — through `pig-kgateway`.** `pig-kgateway` is a plain ingress gateway (not ambient-captured — see the "Known issue" discussion in the investigation history), so it terminates the connection from `demo-egress-waypoint` and re-originates a new one *as itself*, not as workload-A. The original caller's identity is lost at this hop:
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 exec -n source-demo \
-  $(kubectl --context $REMOTE_CONTEXT2 get pod -n source-demo -l app=workload-a -o jsonpath='{.items[0].metadata.name}') \
-  -- curl -s -o /dev/null -w "status=%{http_code}\n" http://pig-kgateway.i-pig.mesh.internal/headers
-
-kubectl --context $REMOTE_CONTEXT3 logs -n i-pig -l gateway.networking.k8s.io/gateway-name=demo-waypoint --tail=1
-```
-
-Captured result — `src.identity` is `pig-kgateway`'s own identity, not workload-A's:
-```
-status=200
-2026-09-10T17:13:25.886239Z info request gateway=i-pig/demo-waypoint listener=waypoint route=i-pig/_waypoint-default endpoint=workload-b.i-pig.mesh.internal:80 src.addr=10.10.2.8:58460 src.identity=spiffe://cluster.local/ns/i-pig/sa/pig-kgateway http.method=GET http.host=workload-b.i-pig.mesh.internal http.path=/headers http.version=HTTP/1.1 http.status=200 protocol=http duration=9ms
-```
-
-**After — direct workload-A → workload-B, bypassing `pig-kgateway`.** workload-A's outbound traffic always routes through `demo-egress-waypoint` (SA label in §3.1), so even a direct call to workload-B still goes through a real ambient waypoint on each end — it just skips the one hop (`pig-kgateway`) that can't delegate:
-
-```bash
-kubectl --context $REMOTE_CONTEXT2 exec -n source-demo \
-  $(kubectl --context $REMOTE_CONTEXT2 get pod -n source-demo -l app=workload-a -o jsonpath='{.items[0].metadata.name}') \
-  -- curl -s -o /dev/null -w "status=%{http_code}\n" http://workload-b.i-pig.mesh.internal/headers
-
-kubectl --context $REMOTE_CONTEXT3 logs -n i-pig -l gateway.networking.k8s.io/gateway-name=demo-waypoint --tail=1
-```
-
-Captured result — `src.identity` is workload-A's own SPIFFE identity, delegated end-to-end by `demo-egress-waypoint`'s `SourceDelegation` and verified cryptographically by the mTLS handshake, no header or proof token involved:
-```
-status=200
-2026-09-10T17:13:28.972866Z info request gateway=i-pig/demo-waypoint listener=waypoint route=i-pig/_waypoint-default endpoint=workload-b.i-pig.mesh.internal:80 src.addr=10.20.0.18:56398 src.identity=spiffe://cluster.local/ns/source-demo/sa/workload-a-sa http.method=GET http.host=workload-b.i-pig.mesh.internal http.path=/headers http.version=HTTP/1.1 http.status=200 protocol=http duration=2ms
-```
-
-**Conclusion:** identity propagation from workload-A to workload-B is real and provable via `SourceDelegation`'s connection-level identity delegation (`src.identity` in the receiving proxy's access log), independent of the currently-broken WIT/WPT header verification path. The one hop that can't preserve it — `pig-kgateway`, a plain ingress gateway that terminates and re-originates the connection as itself — is the same hop where `entWptEnforcement` was meant to re-attach proof of the original identity, which is exactly the path blocked by the verification bug.
-
----
 
 ## Cleanup
 
