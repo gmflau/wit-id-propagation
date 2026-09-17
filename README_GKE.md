@@ -737,10 +737,10 @@ spec:
 EOF
 ```
 
-Label `portfolio-b-pig` as a global service so it's reachable cross-cluster:
+<!-- Label `portfolio-b-pig` as a global service so it's reachable cross-cluster:
 ```bash
 kubectl --context $REMOTE_CONTEXT1 label svc portfolio-b-pig -n i-pig solo.io/service-scope=global --overwrite
-```
+``` -->
 
 Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
 ```bash
@@ -748,6 +748,7 @@ kubectl --context $REMOTE_CONTEXT1 create namespace demo
 kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
 ```
 
+Create a matching `i-pig` namespace on cluster-2 (the consuming side, where `wpt-cel-egress` lives) and point its route at `portfolio-b-pig` via its cross-cluster mesh-internal hostname:
 ```bash
 kubectl --context $REMOTE_CONTEXT2 create namespace i-pig
 kubectl --context $REMOTE_CONTEXT2 label namespace i-pig istio.io/dataplane-mode=ambient
@@ -780,6 +781,7 @@ Verify `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
 kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'curl -si --max-time 15 http://wpt-cel-egress.i-peg.svc.cluster.local:8080/workload-b1/headers'
 ```
 ```
+HTTP/1.1 200 OK
 access-control-allow-credentials: true
 access-control-allow-origin: *
 content-type: application/json; charset=utf-8
