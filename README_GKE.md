@@ -679,8 +679,8 @@ spec:
     name: portfolio-b-pig
   traffic:
     entWptEnforcement:
-      mode: "RequireProof"
-      # mode: "PeerBound"
+      # mode: "RequireProof"
+      mode: "PeerBound"
 ---
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
