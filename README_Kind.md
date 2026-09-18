@@ -18,6 +18,8 @@ This is the local, three-Kind-cluster version of [README_GKE.md](./README_GKE.md
 workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B
 ```
 
+![Architecture Diagram](./img/wit-wpt-id-propagation)
+
 **Cluster layout:**
 - `cluster-1` — `pig-kgateway` (agentgateway), `i-pig` namespace
 - `cluster-2` — `demo-egress-waypoint` (agentgateway), `workload-A` (netshoot), `source-demo` namespace
