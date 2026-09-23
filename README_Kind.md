@@ -621,6 +621,13 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'cur
 
 ## 6.0 Set up `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
 
+
+Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
+```bash
+kubectl --context $REMOTE_CONTEXT1 create namespace demo
+kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
+```
+
 ```bash
 kubectl --context $REMOTE_CONTEXT1 create namespace i-pig
 
@@ -737,12 +744,6 @@ spec:
       name: workload-b1.demo.mesh.internal
       port: 8000
 EOF
-```
-
-Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
-```bash
-kubectl --context $REMOTE_CONTEXT1 create namespace demo
-kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
 ```
 
 Create a matching `i-pig` namespace on cluster-2 (the consuming side, where `wpt-cel-egress` lives) and point its route at `portfolio-b-pig` via its cross-cluster mesh-internal hostname:
