@@ -15,7 +15,7 @@ This lab demonstrates native WIMSE Workload Identity Token (WIT) propagation usi
 
 **Full traffic path:**
 ```
-workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B
+workload-a1 → (ztunnel) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1
 ```
 
 **Cluster layout:**
@@ -59,11 +59,11 @@ Reference: [https://docs.solo.io/istio/1.31.x/security/workload-identity/wimse/]
 >
 > **Mode correction:** an earlier draft of this lab assumed a `PeerIdentification` mode on `EnterpriseAgentgatewayPolicy` for the egress waypoint. That mode doesn't exist — confirmed against the live `enterpriseagentgatewaypolicies.enterpriseagentgateway.solo.io` CRD schema (`workloadIdentity.mode` enum is `SourceDelegation` | `SelfIdentification` only, as of the latest published `enterprise-agentgateway-crds` chart, v2026.9.0). The correct mode is `SourceDelegation`: workload-A's own ztunnel already forwards a WIT on the outbound HBONE connection (see [Ztunnel SAN-claim forwarding](#key-concepts) above), so the egress waypoint only needs to forward it, not mint one from scratch.
 >
-> **Verification bug — `entWptEnforcement` always rejects:** in `enterprise-agentgateway` v2026.9.0, any WIT/WPT verification (`entWptEnforcement` in `Permissive`, `RequireProof`, or `PeerBound` mode) fails with:
+> **Verification bug, fixed as of `v2026.9.2` — `entWptEnforcement` always rejects:** in `enterprise-agentgateway` v2026.9.0, any WIT/WPT verification (`entWptEnforcement` in `Permissive`, `RequireProof`, or `PeerBound` mode) failed with:
 > ```
 > workload proof token verification failed: bound WIT rejected: no SAN in verified cert chain matches trust domain 'cluster.local' (inspected: [DNS:istiod.istio-system.svc])
 > ```
-> `DNS:istiod.istio-system.svc` is istiod's own control-plane serving certificate SAN — not a workload SPIFFE identity. This reproduces on the simplest possible hop (`demo-egress-waypoint` → `demo-waypoint` directly, bypassing `pig-kgateway` entirely) with the same signature, just without the "bound" wording (`workload identity token verification failed: ...`), so it isn't specific to `pig-kgateway` or to cross-cluster routing — the verification logic appears to check the wrong certificate whenever a WIT/WPT is actually validated. Treat this as a confirmed product bug to file against `enterprise-agentgateway` v2026.9.0, not a config error. §5.1 below shows how to demonstrate identity propagation without hitting this path.
+> `DNS:istiod.istio-system.svc` is istiod's own control-plane serving certificate SAN — not a workload SPIFFE identity. This reproduced on the simplest possible hop (`demo-egress-waypoint` → `demo-waypoint` directly, bypassing `pig-kgateway` entirely) with the same signature, just without the "bound" wording (`workload identity token verification failed: ...`), so it wasn't specific to `pig-kgateway` or to cross-cluster routing — the verification logic appeared to check the wrong certificate whenever a WIT/WPT was actually validated. This was a confirmed product bug in `enterprise-agentgateway` v2026.9.0, not a config error — as a workaround, `demo-waypoint` was deliberately left without an `entWptEnforcement` policy (emit-only). **Verified live on `v2026.9.2`: `entWptEnforcement: PeerBound` on `demo-waypoint` now works correctly** (200 OK, full `X-Forwarded-Workload-Identity` chain, no rejection) — the policy below reflects that fix.
 
 ---
 
@@ -561,6 +561,20 @@ spec:
       mode: SourceDelegation
       emitProof: true
       proofLifetime: 60s
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: demo-waypoint-enforce
+  namespace: demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-waypoint
+  traffic:
+    entWptEnforcement:
+      mode: "PeerBound"
 EOF
 
 kubectl --context $REMOTE_CONTEXT2 label namespace demo istio.io/use-waypoint=demo-waypoint --overwrite
@@ -643,7 +657,6 @@ spec:
   gatewayClassName: enterprise-agentgateway
   infrastructure:
     labels:
-      # networking.istio.io/tunnel: "http"
       security.istio.io/tlsMode: "istio"   
       solo.io/service-scope: global
     parametersRef:
@@ -654,7 +667,6 @@ spec:
   - name: hbone
     port: 15008
     protocol: HBONE
-  # - name: http
   - name: mtls
     port: 8080
     # protocol: HTTP
@@ -811,7 +823,7 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'cur
 
 ---
 
-## 7.0 Set up `workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B`:
+## 7.0 Set up `workload-a1 → (ztunnel) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1`:
 
 ```bash
 kubectl --context $REMOTE_CONTEXT3 apply -f - <<EOF
@@ -858,13 +870,27 @@ spec:
       mode: SourceDelegation
       emitProof: true
       proofLifetime: 60s
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: demo-waypoint-enforce
+  namespace: demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-waypoint
+  traffic:
+    entWptEnforcement:
+      mode: "PeerBound"
 EOF
 
 kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/use-waypoint=demo-waypoint --overwrite
 kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/ingress-use-waypoint=true --overwrite
 ```
 
-Verify `workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B`:
+Verify `workload-a1 → (ztunnel) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1`:
 ```bash
 kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'curl -si --max-time 15 http://wpt-cel-egress.i-peg.svc.cluster.local:8080/workload-b1/headers'
 ```

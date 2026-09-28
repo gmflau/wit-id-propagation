@@ -7,7 +7,7 @@ versions:
 title: "WIT Identity Propagation from a Google Cloud Run Workload (Dedicated Ztunnel Sidecar, GKE Multi-Cluster)"
 ---
 
-# WIT Identity Propagation: workload-a1 (Cloud Run) → Agentgateway Egress → Agentgateway PIG Gateway → Agentgateway Waypoint → workload-B
+# WIT Identity Propagation: workload-a1 (Cloud Run) → Agentgateway Egress → Agentgateway PIG Gateway → Agentgateway Waypoint → workload-b1
 
 ## Overview
 
@@ -745,6 +745,20 @@ spec:
       mode: SourceDelegation
       emitProof: true
       proofLifetime: 60s
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: demo-waypoint-enforce
+  namespace: demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-waypoint
+  traffic:
+    entWptEnforcement:
+      mode: "PeerBound"
 EOF
 
 kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/use-waypoint=demo-waypoint --overwrite

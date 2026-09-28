@@ -15,7 +15,7 @@ This is the local, three-Kind-cluster version of [README_GKE.md](./README_GKE.md
 
 **Full traffic path:**
 ```
-workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B
+workload-a1 → (ztunnel) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1
 ```
 
 ![Architecture Diagram](./img/wit-wpt-id-propagation)
@@ -562,6 +562,20 @@ spec:
       mode: SourceDelegation
       emitProof: true
       proofLifetime: 60s
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: demo-waypoint-enforce
+  namespace: demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-waypoint
+  traffic:
+    entWptEnforcement:
+      mode: "PeerBound"
 EOF
 
 kubectl --context $REMOTE_CONTEXT2 label namespace demo istio.io/use-waypoint=demo-waypoint --overwrite
@@ -647,7 +661,6 @@ spec:
   gatewayClassName: enterprise-agentgateway
   infrastructure:
     labels:
-      # networking.istio.io/tunnel: "http"
       security.istio.io/tlsMode: "istio"   
       solo.io/service-scope: global
     parametersRef:
@@ -658,7 +671,6 @@ spec:
   - name: hbone
     port: 15008
     protocol: HBONE
-  # - name: http
   - name: mtls
     port: 8080
     # protocol: HTTP
@@ -683,7 +695,6 @@ spec:
     name: portfolio-b-pig
   traffic:
     entWptEnforcement:
-      # mode: "RequireProof"
       mode: "PeerBound"
 ---
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
@@ -819,7 +830,7 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'cur
 
 ---
 
-## 7.0 Set up `workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B`:
+## 7.0 Set up `workload-a1 → (ztunnel) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1`:
 
 ```bash
 kubectl --context $REMOTE_CONTEXT3 apply -f - <<EOF
@@ -866,13 +877,27 @@ spec:
       mode: SourceDelegation
       emitProof: true
       proofLifetime: 60s
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: demo-waypoint-enforce
+  namespace: demo
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: demo-waypoint
+  traffic:
+    entWptEnforcement:
+      mode: "PeerBound"
 EOF
 
 kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/use-waypoint=demo-waypoint --overwrite
 kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/ingress-use-waypoint=true --overwrite
 ```
 
-Verify `workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgateway → (east-west) → demo-waypoint → workload-B`:
+Verify `workload-a1 → (ztunnel) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1`:
 ```bash
 kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'curl -si --max-time 15 http://wpt-cel-egress.i-peg.svc.cluster.local:8080/workload-b1/headers'
 ```
