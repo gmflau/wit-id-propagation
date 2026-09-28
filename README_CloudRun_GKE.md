@@ -1,23 +1,23 @@
 ---
 author: Gilbert Lau
-date: "September 23, 2026"
+date: "September 29, 2026"
 versions:
   "Solo istio distro": 1.31.0
-  "enterprise-agentgateway": v2026.9.0
-title: "WIT Identity Propagation from a Real Google Cloud Run Workload (Dedicated Ztunnel Sidecar, GKE Multi-Cluster)"
+  "enterprise-agentgateway": v2026.9.2
+title: "WIT Identity Propagation from a Google Cloud Run Workload (Dedicated Ztunnel Sidecar, GKE Multi-Cluster)"
 ---
 
-# WIT Identity Propagation: workload-a1 (real Cloud Run) → Agentgateway Egress → Agentgateway PIG Gateway → Agentgateway Waypoint → workload-B
+# WIT Identity Propagation: workload-a1 (Cloud Run) → Agentgateway Egress → Agentgateway PIG Gateway → Agentgateway Waypoint → workload-B
 
 ## Overview
 
-This doc extends [README_GKE.md](./README_GKE.md): same three zonal GKE clusters on a shared VPC, same mesh and agentgateway setup, reused verbatim. The difference is **`workload-a1`**. Instead of an ambient pod in a cluster, it's an **actual Google Cloud Run Job** with a dedicated ztunnel sidecar container, running outside GKE entirely.
+This doc sets up three zonal GKE clusters on a shared VPC, running a Solo Istio ambient mesh with `enterprise-agentgateway`. The workload under test, **`workload-a1`**, is an **actual Google Cloud Run Job** with a dedicated ztunnel sidecar container — it runs entirely outside GKE, with no ambient pod backing it in any cluster.
 
-That change brings real constraints. An in-cluster pod is a `kubectl exec`-able process with a kubelet, a CNI, iptables capture and a pod IP on the cluster network. A Cloud Run instance has none of those. Read the constraints table below before running anything; it explains every place this doc's design differs from a normal in-cluster workload, and why.
+That brings real constraints. An in-cluster pod is a `kubectl exec`-able process with a kubelet, a CNI, iptables capture, and a pod IP on the cluster network. A Cloud Run instance has none of those. Read the constraints table below before running anything; it explains every design decision this doc makes to work around that, and why.
 
 > **Related:** for a local simulation of this setup on Kind (a pod standing in for Cloud Run), see [README_CloudRun_Kind.md](./README_CloudRun_Kind.md).
 
-This design joins a real Cloud Run Job, with a dedicated ztunnel sidecar, to the ambient mesh via `remote: false` bootstrap registration. Routing uses mesh-internal DNS names (`*.mesh.internal`) resolved by name through the SOCKS5 proxy — no `ServiceEntry` needed — the same pattern our own `portfolio-b-pig.i-pig.mesh.internal` / `workload-b1.demo.mesh.internal` hostnames already use elsewhere in this doc series.
+This design joins a Cloud Run Job, with a dedicated ztunnel sidecar, to the ambient mesh via `remote: false` bootstrap registration. Routing uses mesh-internal DNS names (`*.mesh.internal`) resolved by name through the SOCKS5 proxy — no `ServiceEntry` needed — the same pattern our own `portfolio-b-pig.i-pig.mesh.internal` / `workload-b1.demo.mesh.internal` hostnames already use elsewhere in this doc series.
 
 This configuration requires three non-default settings, each verified against a live run and described in §4.1, §4.2, §5.0 and [Troubleshooting](#troubleshooting):
   1. **`remote: false`** in the bootstrap JSON. `remote: true` forces double-HBONE through the east-west gateway, and agentgateway's HBONE listener rejects the hostname-addressed inner CONNECT that produces.
@@ -28,17 +28,17 @@ This configuration requires three non-default settings, each verified against a 
 
 **Full traffic path:**
 ```
-workload-a1 (real Cloud Run Job, dedicated ztunnel sidecar) → (Direct VPC Egress, SOCKS5 → HBONE direct to pod IP) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1
+workload-a1 (Cloud Run Job, dedicated ztunnel sidecar) → (Direct VPC Egress, SOCKS5 → HBONE direct to pod IP) → wpt-cel-egress → (east-west) → portfolio-b-pig → (east-west) → demo-waypoint → workload-b1
 ```
 
-**Cluster / project layout** (identical to README_GKE.md):
+**Cluster / project layout**:
 - Project: `field-engineering-us`, region `us-central1`, shared VPC `solo-vpc`
 - `glau-cluster-1` (`us-central1-a`) — `portfolio-b-pig`, `i-pig` namespace
 - `glau-cluster-2` (`us-central1-b`) — `wpt-cel-egress`, `demo`/`i-peg`/`i-pig` namespaces, **plus the existing `istio-eastwest` gateway this doc reuses**
 - `glau-cluster-3` (`us-central1-c`) — `demo-waypoint`, `workload-b1`, `demo` namespace
 - **New:** `workload-a1` — a Cloud Run Job in `us-central1`, connected via Direct VPC Egress, with no presence in any GKE cluster at all
 
-### Real Cloud Run constraints, and how this lab adapts to them
+### Cloud Run constraints, and how this lab adapts to them
 
 | # | Constraint | What an in-cluster pod relies on | Adaptation in this doc |
 |---|---|---|---|
@@ -48,7 +48,7 @@ workload-a1 (real Cloud Run Job, dedicated ztunnel sidecar) → (Direct VPC Egre
 | 4 | **No shared pod network with the GKE clusters.** Cloud Run and GKE are entirely separate compute planes. | The pod reaches `wpt-cel-egress` via plain in-cluster Kubernetes DNS/ClusterIP. | `workload-a1` connects through **Direct VPC Egress** into `solo-vpc` (§3.0), and uses two paths from there. **Control plane:** XDS and certificates go through cluster-2's existing `istio-eastwest` gateway on port 15012 (already provisioned by §1.0/§1.2, so no new load balancer is needed). **Data plane:** HBONE goes straight to the destination pod IP on `:15008`, not through the gateway (`remote: false`, §4.1). |
 | 5 | **No `SO_ORIGINAL_DST` without iptables, no `WorkloadEntry`.** Ambient's normal client-side ztunnel decides whether to HBONE-wrap a connection by looking up the *original* destination the kernel redirected — that signal only exists because of the iptables `REDIRECT` rule, and normal ambient pods get auto-registered by the CNI, not manually. | Nothing redirects traffic into the dedicated ztunnel here, and there's no CNI to auto-register it. | Neither problem needs solving by hand: ztunnel's **local SOCKS5 proxy** takes the destination `host:port` directly from the SOCKS5 protocol (no `SO_ORIGINAL_DST` needed — the app names its target explicitly), resolving `*.mesh.internal` names against the workload registry it already gets from istiod's XDS. No `WorkloadEntry` is needed either: the bootstrap runs ztunnel against a synthetic local workload, and the bootstrap's `remote` field is deliberately `false` so ztunnel dials `wpt-cel-egress`'s pod IP directly over the shared VPC (see §4.1). |
 
-The downstream chain (`wpt-cel-egress` → `portfolio-b-pig` → `demo-waypoint` → `workload-b1`) uses the same pattern and enforcement policies as [README_GKE.md](./README_GKE.md). Only `workload-a1` and how it joins the mesh differ.
+The downstream chain (`wpt-cel-egress` → `portfolio-b-pig` → `demo-waypoint` → `workload-b1`) uses the same pattern and enforcement policies used throughout this series. Only `workload-a1` and how it joins the mesh differ.
 
 **Key concepts (new in this doc):**
 - **Bootstrap JSON:** the real off-cluster onboarding format `PROXY_MODE=dedicated` ztunnel actually consumes when there's no Kubernetes control plane underneath it — a single JSON document (`url`, `caCert`, `namespace`, `serviceAccount`, `network`, `remote: false`, `token`), double base64-encoded, delivered as one env var (`BOOTSTRAP_TOKEN`) rather than as separate mounted files.
@@ -56,15 +56,17 @@ The downstream chain (`wpt-cel-egress` → `portfolio-b-pig` → `demo-waypoint`
 - **Direct VPC Egress:** Cloud Run instances get an IP directly from a dedicated subnet (`solo-subnet-cloudrun`) and reach `solo-vpc` with no separate bridging resource — no managed instance pool to provision (3-5 minutes for a connector) or pay for while idle. This is a deliberate choice over the older **Serverless VPC Access connector** mechanism — functionally equivalent for this lab's purposes, with lower cost and no provisioning wait.
 - **`istio-eastwest` gateway reuse:** the multicluster east-west gateway §1.0/§1.2 already stand up (to link the three GKE clusters) also exposes istiod's XDS/CA port (15012). Cloud Run uses it **only for the control plane**, so no second load balancer is needed. Data-plane traffic does *not* go through it: with `remote: false`, the Cloud Run ztunnel dials `wpt-cel-egress`'s pod IP on `:15008` directly over the shared VPC.
 - **What the bootstrap sets for you:** `BOOTSTRAP_TOKEN` alone makes ztunnel set `PROXY_MODE=dedicated`, `PROXY_WORKLOAD_INFO`, `POD_NAMESPACE`, the XDS/CA addresses and root cert, and the SOCKS5 listener. None of them need to be set by hand (nor `PACKET_MARK`, which only matters with iptables capture). The one setting it does **not** turn on is `ENABLE_WORKLOAD_CLAIMS` (§4.2).
-- Everything else (WIT, WPT, `SourceDelegation`, `PeerBound`) works as in [README_GKE.md](./README_GKE.md); see that doc's Key concepts for what this one builds on.
+- Everything else (WIT, WPT, `SourceDelegation`, `PeerBound`) works the same as the rest of this series.
 
-> **Alpha feature:** WIMSE WIT/WPT support is in alpha and not production-ready. See README_GKE.md's mode-correction note for `workloadIdentity.mode` — the same applies here.
+> **Alpha feature:** WIMSE WIT/WPT support is in alpha and not production-ready.
+>
+> **Mode correction:** an earlier draft of this lab assumed a `PeerIdentification` mode on `EnterpriseAgentgatewayPolicy`. That mode doesn't exist — confirmed against the live `enterpriseagentgatewaypolicies.enterpriseagentgateway.solo.io` CRD schema (`workloadIdentity.mode` enum is `SourceDelegation` | `SelfIdentification` only). The correct mode is `SourceDelegation`: `workload-a1`'s own ztunnel already forwards a WIT on the outbound HBONE connection, so each hop only needs to forward it, not mint one from scratch.
 
 ---
 
-## 1.0 Shared infrastructure (identical to README_GKE.md)
+## 1.0 Shared infrastructure
 
-Everything through installing `enterprise-agentgateway` is unchanged from README_GKE.md. Run these exactly as written there before continuing.
+Everything through installing `enterprise-agentgateway` is the same three-cluster ambient mesh and agentgateway setup used throughout this series.
 
 **Additional tools needed for this doc:** `jq`, for building the bootstrap JSON in §4.1 (`brew install jq` / `apt-get install jq`); `crane`, for copying the ztunnel image into your own Artifact Registry in §4.2 (`brew install crane`, or see [go-containerregistry releases](https://github.com/google/go-containerregistry/releases)).
 
@@ -131,7 +133,7 @@ kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/dataplane-mode=
 ### 2.0 Install Enterprise Agentgateway
 
 ```bash
-export AGENTGATEWAY_VERSION=v2026.9.0
+export AGENTGATEWAY_VERSION=v2026.9.2
 ```
 
 **cluster-1** (portfolio-b-pig):
@@ -274,7 +276,7 @@ kubectl --context $REMOTE_CONTEXT2 rollout status deployment/istiod -n istio-sys
 
 Unlike an in-cluster pod, there's no kubelet here to project a rotating token. The real mechanism is a single **bootstrap JSON** blob — not the separate `istio-token`/`root-cert.pem` files a genuine off-cluster VM would use — delivered to the ztunnel sidecar as one env var.
 
-**`workload-a1`'s service account already exists** from README_GKE.md-style setup — it lives in the `demo` namespace on cluster-2, giving it the identity `spiffe://cluster.local/ns/demo/sa/workload-a1`, consistent with every other doc in this series. (`demo` fits this role since no Cloud Run pod ever actually runs inside the cluster — the namespace exists purely to provide identity.)
+**`workload-a1`'s service account is created here** in the `demo` namespace on cluster-2, giving it the identity `spiffe://cluster.local/ns/demo/sa/workload-a1`, consistent with every other doc in this series. (`demo` fits this role since no Cloud Run pod ever actually runs inside the cluster — the namespace exists purely to provide identity.)
 
 ```bash
 kubectl --context $REMOTE_CONTEXT2 create serviceaccount workload-a1 -n demo
@@ -338,7 +340,7 @@ gcloud secrets add-iam-policy-binding workload-a1-bootstrap-token \
 >
 > **`remote` must be `false` here.** `remote: true` sets `ALWAYS_TRAVERSE_NETWORK_GATEWAY=true`, so every outbound request is double-HBONE'd through the east-west gateway. The inner CONNECT then carries a *hostname* (`wpt-cel-egress.i-peg.mesh.internal:8080`), and agentgateway's HBONE listener only accepts `IP:port` targets. It rejects the request with `hbone failed: hostname resolution not supported` (`crates/agentgateway/src/proxy/gateway.rs`), which the Cloud Run ztunnel reports as `error="http status: 400 Bad Request"` against `dst.workload="NetworkGateway/flat-network/..."`. Ordinary ambient pods' ztunnel inbound *does* accept hostnames, so this specific failure is unique to a Gateway-fronted destination reached via a dedicated Cloud Run ztunnel. The gateway detour isn't needed anyway: Cloud Run sits on `solo-vpc` via Direct VPC Egress, is on the same `flat-network`, and GKE pod IPs are VPC-routable. With `remote: false`, ztunnel sends single HBONE straight to the pod's `:15008` with an `IP:port` authority. XDS/CA still go through the east-west gateway's `:15012`, via `url`.
 
-### 4.2 Deploy `workload-a1` as a real Cloud Run Job (dedicated ztunnel sidecar)
+### 4.2 Deploy `workload-a1` as a Cloud Run Job (dedicated ztunnel sidecar)
 
 **Copy the mesh's ztunnel image into your own Artifact Registry.** Cloud Run needs to pull it from a registry in your project — don't assume Cloud Run can pull directly from Solo's registry:
 
@@ -547,19 +549,13 @@ spec:
 EOF
 ```
 
-> **`solo.io/service-scope: global` is required here**, not optional. Only global-scoped services get a `<name>.<namespace>.mesh.internal` hostname; without the label, ztunnel only knows this service as `wpt-cel-egress.i-peg.svc.cluster.local`, and the Cloud Run sidecar's SOCKS5 lookup fails with `HostUnreachable: dns lookup: ... no records found for Query { name: Name("wpt-cel-egress.i-peg.mesh.internal.") ... }`. (README_GKE.md never needed it because their clients used plain cluster DNS.) Setting it via `infrastructure.labels` makes agentgateway stamp it onto the generated Service.
+> **`solo.io/service-scope: global` is required here**, not optional. Only global-scoped services get a `<name>.<namespace>.mesh.internal` hostname; without the label, ztunnel only knows this service as `wpt-cel-egress.i-peg.svc.cluster.local`, and the Cloud Run sidecar's SOCKS5 lookup fails with `HostUnreachable: dns lookup: ... no records found for Query { name: Name("wpt-cel-egress.i-peg.mesh.internal.") ... }`. (other docs in this series never needed it because their clients used plain cluster DNS.) Setting it via `infrastructure.labels` makes agentgateway stamp it onto the generated Service.
 
 No load balancer is needed for `wpt-cel-egress` itself: once it exists, cluster-2's istiod publishes it to every workload's XDS view (including `workload-a1`'s dedicated ztunnel, once it connects via §4.1's bootstrap), and `workload-a1`'s `curl` reaches it by its mesh-internal DNS name (`wpt-cel-egress.i-peg.mesh.internal:8080`) through ztunnel's SOCKS5 proxy — the same `<name>.<namespace>.mesh.internal` convention already used for `portfolio-b-pig.i-pig.mesh.internal` and `workload-b1.demo.mesh.internal` in §6.0 below. Its actual route to `workload-b1` is added there, once `portfolio-b-pig` exists to route to.
 
 ---
 
-## 6.0 Set up `workload-a1 (real Cloud Run) → wpt-cel-egress → portfolio-b-pig → workload-b1`
-
-Create dummy `demo` namespace to allow backendRefs to `kind: Hostname` (`workload-b1.demo.mesh.internal`) to resolve in the HTTPRoute above:
-```bash
-kubectl --context $REMOTE_CONTEXT1 create namespace demo
-kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
-```
+## 6.0 Set up `workload-a1 (Cloud Run) → wpt-cel-egress → portfolio-b-pig → workload-b1`
 
 ```bash
 kubectl --context $REMOTE_CONTEXT1 create namespace i-pig
@@ -651,7 +647,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: portfolio-b-pig-to-workload-b1
-  namespace: demo
+  namespace: i-pig
 spec:
   parentRefs:
   - name: portfolio-b-pig
@@ -675,17 +671,14 @@ spec:
 EOF
 ```
 
-Create a matching `i-pig` namespace on cluster-2 (the consuming side, where `wpt-cel-egress` lives) and point its route at `portfolio-b-pig` via its cross-cluster mesh-internal hostname:
+Point a route on cluster-2 (the consuming side, where `wpt-cel-egress` lives) at `portfolio-b-pig` via its cross-cluster mesh-internal hostname. It lives in the already-existing `demo` namespace (the same one holding `workload-a1`'s identity, §4.1):
 ```bash
-kubectl --context $REMOTE_CONTEXT2 create namespace i-pig
-kubectl --context $REMOTE_CONTEXT2 label namespace i-pig istio.io/dataplane-mode=ambient
-
 kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: wpt-cel-egress-to-workload-b
-  namespace: i-pig
+  namespace: demo
 spec:
   parentRefs:
   - name: wpt-cel-egress
@@ -705,7 +698,7 @@ EOF
 
 ---
 
-## 7.0 Set up `workload-a1 (real Cloud Run) → wpt-cel-egress → portfolio-b-pig → demo-waypoint → workload-b1`
+## 7.0 Set up `workload-a1 (Cloud Run) → wpt-cel-egress → portfolio-b-pig → demo-waypoint → workload-b1`
 
 ```bash
 kubectl --context $REMOTE_CONTEXT3 apply -f - <<EOF
@@ -790,7 +783,7 @@ transfer-encoding: chunked
 }
 ```
 
-(Real output, captured from execution `workload-a1-7sj7x` — JWT values truncated to placeholders above; every other field, including the full `X-Forwarded-Workload-Identity` chain, is verbatim. The identity of `workload-a1` — a real Cloud Run Job with no GKE presence at all — survives all four hops, ending at `spiffe://cluster.local/ns/demo/sa/workload-a1` as `workloadIdentity.chain.origin`, exactly matching the shape of every other doc in this series.)
+(Real output, captured from execution `workload-a1-7sj7x` — JWT values truncated to placeholders above; every other field, including the full `X-Forwarded-Workload-Identity` chain, is verbatim. The identity of `workload-a1` — a Cloud Run Job with no GKE presence at all — survives all four hops, ending at `spiffe://cluster.local/ns/demo/sa/workload-a1` as `workloadIdentity.chain.origin`, exactly matching the shape of every other doc in this series.)
 
 **What to confirm in the logs.** A `200 OK` alone doesn't prove identity propagation, because it also succeeds without `ENABLE_WORKLOAD_CLAIMS`. Check all three of these:
 - `X-Forwarded-Workload-Identity` **starts with** `spiffe://cluster.local/ns/demo/sa/workload-a1`.

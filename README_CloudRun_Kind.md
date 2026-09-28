@@ -3,7 +3,7 @@ author: Gilbert Lau
 date: "September 21, 2026"
 versions:
   "Solo istio distro": 1.31.0
-  "enterprise-agentgateway": v2026.9.0
+  "enterprise-agentgateway": v2026.9.2
 title: "WIT Identity Propagation from a Cloud Run–style Workload (Dedicated Ztunnel Sidecar, Local Kind Multi-Cluster)"
 ---
 
@@ -122,7 +122,7 @@ kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/dataplane-mode=
 ### 2.0 Install Enterprise Agentgateway
 
 ```bash
-export AGENTGATEWAY_VERSION=v2026.9.0
+export AGENTGATEWAY_VERSION=v2026.9.2
 ```
 
 **cluster-1** (portfolio-b-pig):
@@ -661,13 +661,6 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -c app -- sh 
 
 ## 6.0 Set up `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
 
-
-Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
-```bash
-kubectl --context $REMOTE_CONTEXT1 create namespace demo
-kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
-```
-
 ```bash
 kubectl --context $REMOTE_CONTEXT1 create namespace i-pig
 
@@ -758,7 +751,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: portfolio-b-pig-to-workload-b1
-  namespace: demo
+  namespace: i-pig
 spec:
   parentRefs:
   - name: portfolio-b-pig
@@ -782,17 +775,14 @@ spec:
 EOF
 ```
 
-Create a matching `i-pig` namespace on cluster-2 (the consuming side, where `wpt-cel-egress` lives) and point its route at `portfolio-b-pig` via its cross-cluster mesh-internal hostname:
+Point a route on cluster-2 (the consuming side, where `wpt-cel-egress` lives) at `portfolio-b-pig` via its cross-cluster mesh-internal hostname. It lives in the already-existing `demo` namespace, alongside `wpt-cel-egress-to-workload-a`:
 ```bash
-kubectl --context $REMOTE_CONTEXT2 create namespace i-pig
-kubectl --context $REMOTE_CONTEXT2 label namespace i-pig istio.io/dataplane-mode=ambient
-
 kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: wpt-cel-egress-to-workload-b
-  namespace: i-pig
+  namespace: demo
 spec:
   parentRefs:
   - name: wpt-cel-egress

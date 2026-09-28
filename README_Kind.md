@@ -1,9 +1,9 @@
 ---
 author: Gilbert Lau
-date: "September 17, 2026"
+date: "September 28, 2026"
 versions:
   "Solo istio distro": 1.31.0
-  "enterprise-agentgateway": v2026.9.0
+  "enterprise-agentgateway": v2026.9.2
 title: "WIT Identity Propagation with Enterprise Agentgateway (Local Kind Multi-Cluster)"
 ---
 
@@ -57,6 +57,8 @@ workload-A → (ztunnel) → demo-egress-waypoint → (east-west) → pig-kgatew
 
 Reference: [https://docs.solo.io/istio/1.31.x/security/workload-identity/wimse/](https://docs.solo.io/istio/1.31.x/security/workload-identity/wimse/)
 
+> **Status: verified end to end** on 2026-09-25 against `enterprise-agentgateway v2026.9.2` on 3 fresh local Kind clusters. `workload-b1` returned `200 OK` at every hop, and the full chain's `X-Forwarded-Workload-Identity` ended at `spiffe://cluster.local/ns/demo/sa/workload-a1, .../i-peg/sa/wpt-cel-egress, .../i-pig/sa/portfolio-b-pig, .../demo/sa/demo-waypoint` — confirming `portfolio-b-pig-to-workload-b1` resolves correctly from the `i-pig` namespace (see §6.0).
+>
 > **Alpha feature:** WIMSE WIT/WPT support is in alpha and not production-ready.
 >
 > **Mode correction:** an earlier draft of this lab assumed a `PeerIdentification` mode on `EnterpriseAgentgatewayPolicy` for the egress waypoint. That mode doesn't exist — confirmed against the live `enterpriseagentgatewaypolicies.enterpriseagentgateway.solo.io` CRD schema (`workloadIdentity.mode` enum is `SourceDelegation` | `SelfIdentification` only, as of the latest published `enterprise-agentgateway-crds` chart, v2026.9.0). The correct mode is `SourceDelegation`: workload-A's own ztunnel already forwards a WIT on the outbound HBONE connection (see [Ztunnel SAN-claim forwarding](#key-concepts) above), so the egress waypoint only needs to forward it, not mint one from scratch.
@@ -132,7 +134,7 @@ kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/dataplane-mode=
 `enterprise-agentgateway` is not bundled with Solo Istio. Install the controller on all three clusters: cluster-1 (`pig-kgateway`), cluster-2 (`demo-egress-waypoint`), and cluster-3 (`demo-waypoint`). `istio.clusterId` must match the `multiCluster.clusterName` set by the setup script for each cluster.
 
 ```bash
-export AGENTGATEWAY_VERSION=v2026.9.0
+export AGENTGATEWAY_VERSION=v2026.9.2
 ```
 
 **cluster-1** (pig-kgateway):
@@ -621,13 +623,6 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'cur
 
 ## 6.0 Set up `workload-a1 → wpt-cel-egress → portfolio-b-pig → workload-b1`:
 
-
-Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
-```bash
-kubectl --context $REMOTE_CONTEXT1 create namespace demo
-kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
-```
-
 ```bash
 kubectl --context $REMOTE_CONTEXT1 create namespace i-pig
 
@@ -722,7 +717,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: portfolio-b-pig-to-workload-b1
-  namespace: demo
+  namespace: i-pig
 spec:
   parentRefs:
   - name: portfolio-b-pig
@@ -746,17 +741,14 @@ spec:
 EOF
 ```
 
-Create a matching `i-pig` namespace on cluster-2 (the consuming side, where `wpt-cel-egress` lives) and point its route at `portfolio-b-pig` via its cross-cluster mesh-internal hostname:
+Point a route on cluster-2 (the consuming side, where `wpt-cel-egress` lives) at `portfolio-b-pig` via its cross-cluster mesh-internal hostname.
 ```bash
-kubectl --context $REMOTE_CONTEXT2 create namespace i-pig
-kubectl --context $REMOTE_CONTEXT2 label namespace i-pig istio.io/dataplane-mode=ambient
-
 kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: wpt-cel-egress-to-workload-b
-  namespace: i-pig
+  namespace: demo
 spec:
   parentRefs:
   - name: wpt-cel-egress

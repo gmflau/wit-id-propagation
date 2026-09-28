@@ -1,9 +1,9 @@
 ---
 author: Gilbert Lau
-date: "September xx, 2026"
+date: "September 28, 2026"
 versions:
   "Solo istio distro": 1.31.0
-  "enterprise-agentgateway": v2026.9.0
+  "enterprise-agentgateway": v2026.9.2
 title: "WIT Identity Propagation with Enterprise Agentgateway"
 ---
 
@@ -136,7 +136,7 @@ kubectl --context $REMOTE_CONTEXT3 label namespace demo istio.io/dataplane-mode=
 `enterprise-agentgateway` is not bundled with Solo Istio. Install the controller on all three clusters: cluster-1 (`pig-kgateway`), cluster-2 (`demo-egress-waypoint`), and cluster-3 (`demo-waypoint`). `istio.clusterId` must match the `multiCluster.clusterName` set by the setup script for each cluster.
 
 ```bash
-export AGENTGATEWAY_VERSION=v2026.9.0
+export AGENTGATEWAY_VERSION=v2026.9.2
 ```
 
 **cluster-1** (pig-kgateway):
@@ -713,7 +713,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: portfolio-b-pig-to-workload-b1
-  namespace: demo
+  namespace: i-pig
 spec:
   parentRefs:
   - name: portfolio-b-pig
@@ -742,23 +742,14 @@ EOF
 kubectl --context $REMOTE_CONTEXT1 label svc portfolio-b-pig -n i-pig solo.io/service-scope=global --overwrite
 ``` -->
 
-Creaet dummy `demo` namespace to allow backendRefs to kind: Hostname (workload-b1.demo.mesh.internal) to resolve in HTTPRoute (portfolio-b-pig-to-workload-b1)
+Point a route on cluster-2 (the consuming side, where `wpt-cel-egress` lives) at `portfolio-b-pig` via its cross-cluster mesh-internal hostname. It lives in the already-existing `demo` namespace, alongside `wpt-cel-egress-to-workload-a`:
 ```bash
-kubectl --context $REMOTE_CONTEXT1 create namespace demo
-kubectl --context $REMOTE_CONTEXT1 label namespace demo istio.io/dataplane-mode=ambient
-```
-
-Create a matching `i-pig` namespace on cluster-2 (the consuming side, where `wpt-cel-egress` lives) and point its route at `portfolio-b-pig` via its cross-cluster mesh-internal hostname:
-```bash
-kubectl --context $REMOTE_CONTEXT2 create namespace i-pig
-kubectl --context $REMOTE_CONTEXT2 label namespace i-pig istio.io/dataplane-mode=ambient
-
 kubectl --context $REMOTE_CONTEXT2 apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: wpt-cel-egress-to-workload-b
-  namespace: i-pig
+  namespace: demo
 spec:
   parentRefs:
   - name: wpt-cel-egress
@@ -927,5 +918,4 @@ kubectl --context $REMOTE_CONTEXT2 exec -n demo deploy/workload-a1 -- sh -c 'cur
 ```bash
 ./data/cleanup-3-3n-gke-clusters.sh
 ```
-
 
